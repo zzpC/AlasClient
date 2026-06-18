@@ -14,7 +14,9 @@ class MainActivity : Activity() {
     companion object {
         private const val PREFS_NAME = "resolution_prefs"
         private const val KEY_ORIGINAL_SIZE = "original_size"
+        private const val KEY_ORIGINAL_DENSITY = "original_density"
         private const val TARGET_SIZE = "720x1280"
+        private const val TARGET_DENSITY = "320"
         private const val TAG = "OpenLocalhost"
     }
 
@@ -32,20 +34,19 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
-    /**
-     * 显示主对话框：选择设置分辨率或恢复分辨率
-     */
     private fun showMainDialog() {
         if (isFinishing || isDestroyed) return
 
         val originalSize = getSavedOriginalResolution()
-        val currentPhysical = getPhysicalResolution()
+        val originalDensity = getSavedOriginalDensity()
+        val currentSize = getPhysicalResolution()
+        val currentDensity = getPhysicalDensity()
 
         val message = buildString {
-            append("当前物理分辨率: $currentPhysical\n")
-            if (originalSize != null) {
-                append("上次保存的原始分辨率: $originalSize\n")
-            }
+            append("物理分辨率: $currentSize\n")
+            append("物理密度: $currentDensity\n")
+            if (originalSize != null) append("保存的原始分辨率: $originalSize\n")
+            if (originalDensity != null) append("保存的原始密度: $originalDensity\n")
             append("\n请选择操作：")
         }
 
@@ -53,37 +54,34 @@ class MainActivity : Activity() {
             .setTitle("分辨率管理")
             .setMessage(message)
             .setCancelable(false)
-            .setPositiveButton("设置720x1280并启动") { _, _ ->
-                // 保存原始分辨率
-                if (currentPhysical != null) {
-                    saveOriginalResolution(currentPhysical)
-                }
-                // 设置目标分辨率
-                if (setResolution(TARGET_SIZE)) {
+            .setPositiveButton("设置720x1280/320并启动") { _, _ ->
+                // 保存原始值
+                currentSize?.let { saveOriginalResolution(it) }
+                currentDensity?.let { saveOriginalDensity(it) }
+                // 设置目标值
+                val sizeOk = execRoot("wm size $TARGET_SIZE")
+                val densityOk = execRoot("wm density $TARGET_DENSITY")
+                // 开启 ADB 无线调试端口，方便本地 HTTP 服务通过回环地址访问
+//                val adbdOk = execRoot("setprop service.adb.tcp.port 5555 && start adbd")
+                android.util.Log.d(TAG, "size=$sizeOk, density=$densityOk")
+
+                if (sizeOk && densityOk) {
                     openBrowser()
                 } else {
-                    Toast.makeText(
-                        this,
-                        "设置分辨率失败，请先通过ADB授权：\nadb shell pm grant $packageName android.permission.WRITE_SECURE_SETTINGS",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    Toast.makeText(this, "设置失败，请在KernelSU中授权root", Toast.LENGTH_LONG).show()
                 }
                 finish()
             }
-            .setNegativeButton("恢复原始分辨率") { _, _ ->
-                if (originalSize != null) {
-                    if (setResolution(originalSize)) {
-                        clearSavedResolution()
-                        Toast.makeText(this, "分辨率已恢复为 $originalSize", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(this, "恢复失败", Toast.LENGTH_LONG).show()
-                    }
+            .setNegativeButton("恢复默认") { _, _ ->
+                val sizeOk = execRoot("wm size reset")
+                val densityOk = execRoot("wm density reset")
+                android.util.Log.d(TAG, "reset size=$sizeOk, density=$densityOk")
+
+                if (sizeOk && densityOk) {
+                    clearSavedSettings()
+                    Toast.makeText(this, "已重置为默认", Toast.LENGTH_SHORT).show()
                 } else {
-                    if (execCommand(arrayOf("wm", "size", "reset"))) {
-                        Toast.makeText(this, "分辨率已重置", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(this, "重置失败", Toast.LENGTH_LONG).show()
-                    }
+                    Toast.makeText(this, "恢复失败", Toast.LENGTH_LONG).show()
                 }
                 finish()
             }
@@ -94,72 +92,78 @@ class MainActivity : Activity() {
             .show()
     }
 
-    /**
-     * 打开浏览器
-     */
     private fun openBrowser() {
         try {
-            val url = "http://127.0.0.1:22267"
-            startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
+            startActivity(Intent(Intent.ACTION_VIEW, "http://127.0.0.1:22267".toUri()))
         } catch (e: Exception) {
             e.printStackTrace()
         }
     }
 
     /**
-     * 执行 shell 命令
+     * 通过 su -c 执行 root 命令
      */
-    private fun execCommand(args: Array<String>): Boolean {
+    private fun execRoot(command: String): Boolean {
         return try {
-            val process = Runtime.getRuntime().exec(args)
+            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
             val output = process.inputStream.bufferedReader().readText()
             val error = process.errorStream.bufferedReader().readText()
             val exitCode = process.waitFor()
-            android.util.Log.d(TAG, "execCommand: ${args.joinToString(" ")}, exit=$exitCode, out=[$output], err=[$error]")
+            android.util.Log.d(TAG, "execRoot: $command, exit=$exitCode, out=[$output], err=[$error]")
             exitCode == 0
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "execCommand exception: ${args.joinToString(" ")}", e)
+            android.util.Log.e(TAG, "execRoot exception: $command", e)
             false
         }
     }
 
     /**
-     * 设置分辨率
-     */
-    private fun setResolution(size: String): Boolean {
-        return execCommand(arrayOf("wm", "size", size))
-    }
-
-    /**
-     * 获取物理分辨率
+     * 通过 su 获取 wm size 输出
      */
     private fun getPhysicalResolution(): String? {
         return try {
-            val process = Runtime.getRuntime().exec(arrayOf("wm", "size"))
+            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "wm size"))
             val output = process.inputStream.bufferedReader().readText()
             process.waitFor()
-            android.util.Log.d(TAG, "getPhysicalResolution: output=[$output]")
-            val regex = Regex("Physical size: (\\d+x\\d+)")
-            regex.find(output)?.groupValues?.get(1)
+            android.util.Log.d(TAG, "getPhysicalResolution: [$output]")
+            Regex("Physical size: (\\d+x\\d+)").find(output)?.groupValues?.get(1)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 通过 su 获取 wm density 输出
+     */
+    private fun getPhysicalDensity(): String? {
+        return try {
+            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "wm density"))
+            val output = process.inputStream.bufferedReader().readText()
+            process.waitFor()
+            android.util.Log.d(TAG, "getPhysicalDensity: [$output]")
+            Regex("Physical density: (\\d+)").find(output)?.groupValues?.get(1)
         } catch (e: Exception) {
             null
         }
     }
 
     private fun saveOriginalResolution(size: String) {
-        getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .edit()
-            .putString(KEY_ORIGINAL_SIZE, size)
-            .apply()
-        android.util.Log.d(TAG, "saveOriginalResolution: $size")
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putString(KEY_ORIGINAL_SIZE, size).apply()
     }
 
-    private fun getSavedOriginalResolution(): String? {
-        return getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-            .getString(KEY_ORIGINAL_SIZE, null)
+    private fun getSavedOriginalResolution(): String? =
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_ORIGINAL_SIZE, null)
+
+    private fun saveOriginalDensity(density: String) {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+            .putString(KEY_ORIGINAL_DENSITY, density).apply()
     }
 
-    private fun clearSavedResolution() {
+    private fun getSavedOriginalDensity(): String? =
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getString(KEY_ORIGINAL_DENSITY, null)
+
+    private fun clearSavedSettings() {
         getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().clear().apply()
     }
 }

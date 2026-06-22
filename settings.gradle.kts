@@ -22,6 +22,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "OpenLocalhost"
+rootProject.name = "AlasClient"
 include(":app")
  

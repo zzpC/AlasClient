@@ -18,6 +18,9 @@ class MainActivity : Activity() {
         private const val TARGET_SIZE = "720x1280"
         private const val TARGET_DENSITY = "320"
         private const val TAG = "OpenLocalhost"
+
+        // 静态变量，生命周期与进程一致。只要进程不被杀死，该变量就会保持。
+        private var hasShownInThisSession = false
     }
 
     private var dialog: AlertDialog? = null
@@ -25,6 +28,16 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 如果本次进程生命周期内已经显示过（例如从后台切回，或 MainActivity 销毁后再次进入）
+        // 则直接跳转到浏览器，不再弹窗。
+        if (hasShownInThisSession) {
+            android.util.Log.d(TAG, "Session already active (process alive), skipping dialog.")
+            openBrowser()
+            finish()
+            return
+        }
+
         handler.post { showMainDialog() }
     }
 
@@ -55,6 +68,9 @@ class MainActivity : Activity() {
             .setMessage(message)
             .setCancelable(false)
             .setPositiveButton("设置720x1280/320并启动") { _, _ ->
+                // 标记本次进程会话已显示过
+                hasShownInThisSession = true
+
                 // 保存原始值
                 currentSize?.let { saveOriginalResolution(it) }
                 currentDensity?.let { saveOriginalDensity(it) }
@@ -73,6 +89,9 @@ class MainActivity : Activity() {
                 finish()
             }
             .setNegativeButton("恢复默认") { _, _ ->
+                // 恢复默认也视为一次操作
+                hasShownInThisSession = true
+
                 val sizeOk = execRoot("wm size reset")
                 val densityOk = execRoot("wm density reset")
                 android.util.Log.d(TAG, "reset size=$sizeOk, density=$densityOk")
@@ -86,6 +105,7 @@ class MainActivity : Activity() {
                 finish()
             }
             .setNeutralButton("直接启动") { _, _ ->
+                hasShownInThisSession = true
                 openBrowser()
                 finish()
             }
